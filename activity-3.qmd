@@ -1,0 +1,333 @@
+---
+title: "Activity 3"
+subtitle: "Inference: Standard Error Estimation"
+toc: true
+format: live-html
+webr:
+  show-startup-message: false
+  packages:
+    - dplyr
+    - ggplot2
+    - kableExtra
+    - broom
+    - sandwich
+    - numDeriv
+  resources:
+    - R/metadata.R
+    - data/tpa_ds.rds
+---
+
+In Activity 3, we estimate standard errors for the IPT-weighted (ATE) and SMR-weighted (ATT) risk differences using three approaches: the robust sandwich variance, the bootstrap, and M-estimation.
+
+Standard error estimation for weighted estimators is non-trivial. The weights are themselves estimated quantities, and their uncertainty should be propagated through to the final estimate. The three methods handle this very differently.
+
+# Setup
+
+Run this block first to load packages, data, and reproduce the preprocessing and weight estimation from Activities 1 and 2.
+
+```{webr}
+library(dplyr)
+library(ggplot2)
+library(kableExtra)
+library(broom)
+library(sandwich)
+library(numDeriv)
+
+source("R/metadata.R")
+tpa_ds <- readRDS("data/tpa_ds.rds")
+
+tpa_ds$age_5f <- cut(tpa_ds$age, breaks = seq(14, 105, by = 5), right = FALSE)
+
+exposure    <- "tpa"
+outcome     <- "death"
+confounders <- c("age", "sex", "living", "comorbid", "cardiac", "prevstroke",
+                 "htn", "hyperchol", "afib", "aphasia", "paresis_3f", "rankpre", "icu")
+
+tpa_ds_cc <- tpa_ds |>
+  dplyr::filter(dplyr::if_all(dplyr::all_of(c(exposure, outcome, confounders)), ~!is.na(.x)))
+
+## Propensity scores and weights
+expform <- sprintf("tpa ~ %s", paste(confounders, collapse = " + "))
+ps_model <- glm(as.formula(expform), data = tpa_ds_cc, family = binomial(link = "logit"))
+tpa_ds_cc$ps <- predict(ps_model, type = "response")
+
+tpa_ds_cc$ipt <- with(tpa_ds_cc, tpa / ps + (1 - tpa) / (1 - ps))
+tpa_ds_cc$smr <- with(tpa_ds_cc, tpa + (1 - tpa) * ps / (1 - ps))
+
+## Weighted outcome models
+ate_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = ipt)
+att_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = smr)
+
+cat("ATE RD:", round(coef(ate_rd_model)["tpa"], 4), "\n")
+cat("ATT RD:", round(coef(att_rd_model)["tpa"], 4), "\n")
+```
+
+---
+
+# Method 1: Robust sandwich variance
+
+The sandwich (Huber-White) variance estimator is a closed-form, fast approach. It accounts for heteroskedasticity in the weighted regression, but **treats the estimated weights as fixed and known** — it does not account for the uncertainty from estimating the propensity score.
+
+For the ATE, this means the sandwich SE is generally **conservative** (too large). For the ATT (which uses inverse-odds weights), it can be either conservative or anti-conservative.
+
+$$\hat{V}_{\text{sandwich}} = (\hat{A})^{-1} \hat{B} \left[(\hat{A})^{-1}\right]^T$$
+
+```{webr}
+ate_se_robust <- sqrt(sandwich::sandwich(ate_rd_model)[2, 2])
+att_se_robust <- sqrt(sandwich::sandwich(att_rd_model)[2, 2])
+
+cat("Robust SE (ATE RD):", round(ate_se_robust, 4), "\n")
+cat("Robust SE (ATT RD):", round(att_se_robust, 4), "\n")
+```
+
+---
+
+# Method 2: Bootstrap
+
+The bootstrap resamples the *entire dataset* with replacement and re-estimates everything from scratch on each resample: the propensity score model, the weights, and the outcome model. The standard deviation of the bootstrap estimates is the bootstrap SE.
+
+This correctly captures all sources of variability, including uncertainty from estimating the propensity score. The drawback is computational cost.
+
+**Note:** 500 bootstrap replicates is sufficient for a workshop illustration. In practice, 1000–2000 replicates are typical. This will take a minute or two in the browser — be patient.
+
+```{webr}
+set.seed(24601)
+B <- 500
+
+boot_results <- matrix(nrow = B, ncol = 2)  # col 1 = ATE RD, col 2 = ATT RD
+
+for (i in seq_len(B)) {
+  boot_idx    <- sample(nrow(tpa_ds_cc), replace = TRUE)
+  boot_sample <- tpa_ds_cc[boot_idx, ]
+
+  ## Re-estimate propensity score on bootstrap sample
+  ps_boot          <- glm(as.formula(expform), data = boot_sample,
+                          family = binomial(link = "logit"))
+  boot_sample$ps   <- predict(ps_boot, type = "response")
+
+  ## Re-calculate weights
+  boot_sample$ipt  <- with(boot_sample, tpa / ps + (1 - tpa) / (1 - ps))
+  boot_sample$smr  <- with(boot_sample, tpa + (1 - tpa) * ps / (1 - ps))
+
+  ## Re-estimate weighted outcome models
+  boot_results[i, 1] <- lm(death ~ tpa, data = boot_sample,
+                            weights = ipt)$coefficients["tpa"]
+  boot_results[i, 2] <- lm(death ~ tpa, data = boot_sample,
+                            weights = smr)$coefficients["tpa"]
+}
+
+boot_se <- apply(boot_results, 2, sd)
+names(boot_se) <- c("ATE", "ATT")
+
+cat("Bootstrap SE (ATE RD):", round(boot_se["ATE"], 4), "\n")
+cat("Bootstrap SE (ATT RD):", round(boot_se["ATT"], 4), "\n")
+```
+
+You can also visualize the bootstrap distribution to check that it looks approximately normal, which is a requirement for valid Wald-type confidence intervals.
+
+```{webr}
+par(mfrow = c(1, 2))
+hist(boot_results[, 1], main = "Bootstrap: ATE RD", xlab = "Estimate", breaks = 30)
+hist(boot_results[, 2], main = "Bootstrap: ATT RD", xlab = "Estimate", breaks = 30)
+```
+
+---
+
+# Method 3: M-estimation
+
+M-estimation propagates uncertainty from *all* estimation steps — propensity score model and outcome model — simultaneously through a system of **stacked estimating equations**. It is computationally efficient (no resampling) and asymptotically valid.
+
+An M-estimator $\hat{\boldsymbol{\theta}}$ solves:
+
+$$\sum_{i=1}^n \psi\left(\mathbf{Y}_i, \hat{\boldsymbol{\theta}}\right) = \mathbf{0}$$
+
+where $\psi$ stacks the score equations from the propensity score model with the estimating equations for the weighted means and risk differences.
+
+The variance of $\hat{\boldsymbol{\theta}}$ is estimated by the empirical sandwich variance:
+
+$$\hat{V} = \hat{A}^{-1} \hat{B} \left(\hat{A}^{-1}\right)^T, \quad \hat{A} = \frac{1}{n}\sum_i \left\{-\psi'\left(Y_i, \hat{\boldsymbol{\theta}}\right)\right\}, \quad \hat{B} = \frac{1}{n}\sum_i \psi\left(Y_i, \hat{\boldsymbol{\theta}}\right)\psi\left(Y_i, \hat{\boldsymbol{\theta}}\right)^T$$
+
+The key benefit: because the propensity score equations are *part of the stack*, their uncertainty is automatically accounted for in the final SEs.
+
+## Set up the data matrix
+
+We first create a design matrix with indicator variables for all multi-level covariates. This is needed because the propensity score estimating equations require a numeric design matrix.
+
+```{webr}
+mest_data <- tpa_ds_cc |>
+  dplyr::mutate(
+    paresis_mild     = as.integer(paresis_3f == "Mild"),
+    paresis_severe   = as.integer(paresis_3f == "Severe"),
+    living_home      = as.integer(living == "At home"),
+    rankpre_nosig    = as.integer(rankpre == "No significant disability"),
+    rankpre_slight   = as.integer(rankpre == "Slight disability"),
+    rankpre_moderate = as.integer(rankpre == "Moderate disability"),
+    rankpre_severe   = as.integer(rankpre == "Severe disability")
+  ) |>
+  dplyr::select(tpa, death, sex, age, comorbid, cardiac, prevstroke,
+                htn, hyperchol, afib, aphasia, icu,
+                paresis_mild, paresis_severe, living_home,
+                starts_with("rankpre_"))
+
+cat("Dimensions of M-estimation data:", nrow(mest_data), "x", ncol(mest_data), "\n")
+cat("Number of PS parameters (including intercept):", ncol(mest_data) - 1, "\n")
+```
+
+## Define the stacked estimating function
+
+The estimating function stacks:
+1. Propensity score model (logistic regression score equations — one per PS parameter)
+2. IPT-weighted group means (control and treated)
+3. ATE risk difference definition: $\theta_{\text{ATE}} = \mu_1^{\text{IPT}} - \mu_0^{\text{IPT}}$
+4. SMR-weighted group means (control and treated)
+5. ATT risk difference definition: $\theta_{\text{ATT}} = \mu_1^{\text{SMR}} - \mu_0^{\text{SMR}}$
+
+```{webr}
+setup_ef <- function(data) {
+  a <- data$tpa
+  y <- data$death
+  x <- model.matrix(~ ., data = data[, !(names(data) %in% c("tpa", "death"))])
+  p_ps <- ncol(x)
+
+  function(theta) {
+    theta_ps       <- theta[1:p_ps]
+    theta_ipt_mu   <- theta[(p_ps + 1):(p_ps + 2)]  # [mu0_ipt, mu1_ipt]
+    theta_ipt_ate  <- theta[p_ps + 3]
+    theta_smr_mu   <- theta[(p_ps + 4):(p_ps + 5)]  # [mu0_smr, mu1_smr]
+    theta_smr_att  <- theta[p_ps + 6]
+
+    ## Propensity score: logistic regression score equations
+    lp     <- x %*% theta_ps
+    pscore <- plogis(lp)
+    ef_ps  <- t(x) %*% (a - pscore)
+
+    ## IPT and SMR weights
+    ipt <- a / pscore + (1 - a) / (1 - pscore)
+    smr <- a + (1 - a) * pscore / (1 - pscore)
+
+    ## Estimating equations for weighted group means
+    ef_ipt_mu0  <- ((1 - a) * ipt) * (y - theta_ipt_mu[1])
+    ef_ipt_mu1  <- (a * ipt) * (y - theta_ipt_mu[2])
+    ef_smr_mu0  <- ((1 - a) * smr) * (y - theta_smr_mu[1])
+    ef_smr_mu1  <- (a * smr) * (y - theta_smr_mu[2])
+
+    ## Estimating equations for ATE and ATT risk differences
+    ef_ate <- theta_ipt_mu[2] - theta_ipt_mu[1] - theta_ipt_ate
+    ef_att <- theta_smr_mu[2] - theta_smr_mu[1] - theta_smr_att
+
+    c(ef_ps,
+      ef_ipt_mu0, ef_ipt_mu1, ef_ate,
+      ef_smr_mu0, ef_smr_mu1, ef_att)
+  }
+}
+```
+
+## Solve the estimating equations
+
+We solve the system $\sum_i \psi(\mathbf{Y}_i, \hat{\boldsymbol{\theta}}) = \mathbf{0}$ using Newton-Raphson iteration with `numDeriv::jacobian` for the Jacobian. Starting values come from our earlier estimates.
+
+```{webr}
+## Build the sum of estimating equations across all observations
+ef_sum <- function(theta) {
+  ef_i <- setup_ef(mest_data)
+  rowSums(sapply(seq_len(nrow(mest_data)), function(i) {
+    ef_i(theta)  # evaluates at the full dataset (vectorized over rows)
+  }))
+}
+
+## Actually the setup_ef already operates on full data vectors,
+## so we just call it once
+ef_total <- function(theta) {
+  ef_fn <- setup_ef(mest_data)
+  ef_fn(theta)
+}
+
+## Starting values: 0s for PS params, rough estimates for means and differences
+p_ps    <- ncol(model.matrix(~ ., data = mest_data[, !(names(mest_data) %in% c("tpa","death"))]))
+mu1_est <- mean(mest_data$death[mest_data$tpa == 1])
+mu0_est <- mean(mest_data$death[mest_data$tpa == 0])
+start   <- c(rep(0, p_ps), mu0_est, mu1_est, mu1_est - mu0_est,
+             mu0_est, mu1_est, mu1_est - mu0_est)
+
+## Newton-Raphson solver (replaces rootSolve::multiroot)
+cat("Solving estimating equations via Newton-Raphson...\n")
+theta_hat <- start
+for (iter in 1:100) {
+  ef_val <- ef_total(theta_hat)
+  if (max(abs(ef_val)) < 1e-8) {
+    cat("Converged at iteration", iter, "\n")
+    break
+  }
+  J         <- numDeriv::jacobian(func = ef_total, x = theta_hat)
+  theta_hat <- theta_hat - solve(J, ef_val)
+}
+```
+
+## Compute the sandwich variance
+
+```{webr}
+## Individual estimating function values for each observation
+n   <- nrow(mest_data)
+ef_fn <- setup_ef(mest_data)
+
+## B matrix: outer products of individual estimating functions
+## (We re-evaluate the function as a matrix — rows = parameters, cols = obs)
+## Since setup_ef vectorizes over the data, we perturb row-by-row
+ef_mat <- sapply(seq_len(n), function(i) {
+  ef_i <- setup_ef(mest_data[i, ])
+  ef_i(theta_hat)
+})
+
+B_mat <- (ef_mat %*% t(ef_mat)) / n
+
+## A matrix: negative Jacobian of total estimating equations, divided by n
+J_hat <- numDeriv::jacobian(func = ef_total, x = theta_hat)
+A_mat <- -J_hat / n
+
+## Sandwich variance
+V_hat <- solve(A_mat) %*% B_mat %*% t(solve(A_mat))
+
+## SEs for ATE (index p_ps + 3) and ATT (index p_ps + 6)
+idx_ate <- p_ps + 3
+idx_att <- p_ps + 6
+
+mest_se <- c(
+  ATE = sqrt(V_hat[idx_ate, idx_ate] / n),
+  ATT = sqrt(V_hat[idx_att, idx_att] / n)
+)
+
+cat("M-estimation SE (ATE RD):", round(mest_se["ATE"], 4), "\n")
+cat("M-estimation SE (ATT RD):", round(mest_se["ATT"], 4), "\n")
+
+## Check: M-estimation estimates should match our earlier weighted estimates
+cat("\nM-estimation ATE RD estimate:", round(theta_hat[idx_ate], 4), "\n")
+cat("Weighted regression ATE RD:  ", round(coef(ate_rd_model)["tpa"], 4), "\n")
+```
+
+---
+
+# Comparing all three methods
+
+```{webr}
+tibble::tibble(
+  Estimand  = c("ATE RD", "ATT RD"),
+  Estimate  = round(c(coef(ate_rd_model)["tpa"],
+                      coef(att_rd_model)["tpa"]), 4),
+  `Robust SE`   = round(c(ate_se_robust, att_se_robust), 4),
+  `Bootstrap SE` = round(boot_se, 4),
+  `M-estimation SE` = round(mest_se, 4)
+) |>
+  kable()
+```
+
+## Discussion
+
+- **Why do the estimates match across methods?** All three methods estimate the same quantity; they differ only in how they compute uncertainty.
+
+- **Robust sandwich SE**: Fast and closed-form, but treats weights as fixed. Generally conservative for the ATE (overestimates SE). For the ATT, it can go either way — see Reifeis & Hudgens (2022) *AJE*.
+
+- **Bootstrap SE**: Resamples the entire data-generating process, capturing all variability including from estimating the propensity score. Computationally expensive but valid.
+
+- **M-estimation SE**: Analytically propagates uncertainty from the propensity score model to the outcome, yielding consistent SEs. Efficient (no resampling), but relies on large-sample asymptotics. Can be smaller than the bootstrap when weights are very extreme (like the IPT weights here with a maximum near 500+).
+
+When sample sizes are large and weights are not too extreme, all three methods tend to agree. The ATE weights in this dataset are extreme (very large maximum), so you may see differences — particularly for the bootstrap and M-estimation SEs, which properly account for the extra variability introduced by those extreme weights.

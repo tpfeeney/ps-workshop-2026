@@ -1,0 +1,122 @@
+---
+title: "Background and Objective"
+toc: true
+---
+
+# Clinical Background
+
+Tissue plasminogen activator (t-PA) is a thrombolytic agent that breaks down blood clots and has become a standard treatment for acute ischemic stroke. Despite demonstrated benefit in randomized trials, early observational studies from community hospitals found roughly a two-fold increase in in-hospital mortality among patients treated with t-PA — the opposite of what the trials showed.
+
+From three RCTs, the pooled Mantel-Haenszel relative risk estimate for t-PA and death is **1.16 (95% CI: 0.95–1.43)** — consistent with no association. The observational data, however, told a different story, raising an important question: what is driving the discrepancy?
+
+## Objective
+
+To estimate the effect of t-PA treatment on in-hospital mortality among patients with acute ischemic stroke using observational data, while carefully accounting for confounding.
+
+---
+
+# Why Observational Data Is Challenging
+
+In a randomized trial, the study design ensures that treated and untreated groups are comparable in expectation — both for measured and unmeasured characteristics. In observational settings, treatment is not randomly assigned, and patients who receive t-PA may differ systematically from those who do not in ways that also affect mortality (e.g., stroke severity, age, comorbidities).
+
+This is **confounding**: the exposure–outcome association is distorted because confounders influence both who receives treatment and who dies.
+
+## The Counterfactual Framework
+
+Causal inference asks: what would have happened to each patient had they received (or not received) t-PA? We cannot observe both potential outcomes for the same person — this is the *fundamental problem of causal inference*.
+
+Let $A$ denote treatment (1 = t-PA, 0 = no t-PA) and $Y$ the outcome (1 = in-hospital death). Define $Y^{a=1}$ as the outcome that *would* occur if the person received t-PA, and $Y^{a=0}$ as the outcome under no t-PA. The individual causal effect is $Y_i^{a=1} - Y_i^{a=0}$, but we observe only one of these.
+
+Instead, we target the **average treatment effect (ATE)**:
+
+$$\text{ATE} = E\left[Y^{a=1} - Y^{a=0}\right]$$
+
+the average effect had *everyone* in the population received t-PA versus had *no one* received t-PA.
+
+## Identification Conditions
+
+To estimate causal effects from observational data, we need three conditions to hold:
+
+1. **Conditional exchangeability** (no unmeasured confounding): $Y^{a=1}, Y^{a=0} \perp\!\!\!\perp A \mid \mathbf{L}$
+   Among people with the same covariate values $\mathbf{L}$, treatment assignment is unrelated to potential outcomes. In other words, we have measured all confounders.
+
+2. **Consistency**: $Y = Y^{a=1} A + Y^{a=0}(1-A)$
+   The observed outcome under treatment $A=a$ equals the potential outcome $Y^{a}$.
+
+3. **Positivity**: $P[A=a \mid \mathbf{L}] > 0$ for all $l$ where $f(l) > 0$
+   Every person, regardless of covariate values, has some non-zero probability of receiving each treatment level. Without this, some covariate patterns are only observed under one treatment, making causal comparison impossible.
+
+---
+
+# Propensity Scores
+
+The **propensity score** is the probability of receiving treatment conditional on observed covariates:
+
+$$e(\mathbf{L}) = P[A = 1 \mid \mathbf{L}]$$
+
+It was introduced by Rosenbaum and Rubin (1983) as a *balancing score*: if the full covariate vector $\mathbf{L}$ is sufficient to achieve conditional exchangeability, so is the scalar propensity score. This is powerful because it collapses a high-dimensional set of confounders into a single number.
+
+In practice, the propensity score is estimated — typically using logistic regression:
+
+$$\text{logit}\left[\hat{e}(\mathbf{L})\right] = \alpha_0 + \boldsymbol{\alpha}^T \mathbf{L}$$
+
+## Variable Selection
+
+Variables included in the propensity score model should be:
+
+- **Confounders**: causes of both treatment and outcome
+- **Outcome predictors**: variables associated with the outcome even if not with treatment (improves precision)
+- **Excluded**: mediators (on the causal pathway from treatment to outcome), pure instruments (causes of treatment only — including them can increase variance without reducing bias)
+
+Variable selection should be guided by a causal diagram (DAG), not by data-driven criteria like stepwise selection.
+
+## Diagnostics
+
+After estimating propensity scores, always examine:
+
+- **Distribution**: Do treated and untreated groups have similar propensity score ranges? Lack of overlap suggests positivity violations.
+- **Balance**: After applying weights, do covariate distributions look similar across treatment groups? Standardized mean differences (SMDs) below 0.1 are a common target.
+
+---
+
+# Inverse Probability of Treatment Weighting
+
+One of the primary uses of the propensity score is to construct **inverse probability of treatment weights (IPTW)** that create a pseudo-population in which confounders are balanced across treatment groups.
+
+The intuition: if a treated person had only a 10% probability of treatment given their covariates, upweighting them by $1/0.10 = 10$ makes them represent ten similar people — including the nine who (with their same covariate profile) were not treated. After reweighting the full sample this way, the pseudo-population has no measured confounding.
+
+## Estimands and Their Weights
+
+Different research questions call for different estimands, each with a corresponding weighting scheme.
+
+**Average Treatment Effect (ATE)** — the effect had *everyone* been treated vs. had *no one* been treated:
+
+$$\hat{\omega}_{i,\text{IPT}} = \frac{I(A_i=1)}{\hat{e}(\mathbf{L}_i)} + \frac{I(A_i=0)}{1-\hat{e}(\mathbf{L}_i)}$$
+
+**Average Treatment Effect in the Treated (ATT)** — the effect among people *who were actually treated*:
+
+$$\hat{\omega}_{i,\text{SMR}} = I(A_i=1) + \frac{I(A_i=0)\,\hat{e}(\mathbf{L}_i)}{1-\hat{e}(\mathbf{L}_i)}$$
+
+Treated observations keep weight 1; untreated observations are upweighted by their odds of treatment, making them resemble the treated group.
+
+**Average Treatment Effect in the Untreated (ATU)** — the effect among people *who were not treated*:
+
+$$\hat{\omega}_{i,\text{SRR}} = \frac{I(A_i=1)\left[1-\hat{e}(\mathbf{L}_i)\right]}{\hat{e}(\mathbf{L}_i)} + I(A_i=0)$$
+
+## Why Does the Estimand Matter Here?
+
+In the t-PA context, consider who actually receives t-PA: patients who arrive at the hospital quickly after symptom onset, have confirmed ischemic stroke, and lack contraindications. This is a clinically selected group. The ATE asks about the effect if *everyone* with a stroke received t-PA — including patients for whom t-PA is contraindicated. The ATT asks about the effect in people *similar to those who actually received it*, which may be more clinically actionable.
+
+---
+
+# Standard Error Estimation
+
+Estimating standard errors (SEs) for weighted estimates is non-trivial: the weights are estimated from data, and this estimation step contributes uncertainty that naive model-based SEs ignore.
+
+Three approaches are covered in this workshop:
+
+1. **Robust (sandwich) variance**: A fast, closed-form estimator that treats the weights as fixed and known. Conservative for the ATE; may be conservative or anti-conservative for the ATT.
+
+2. **Bootstrap**: Resamples the full dataset and re-estimates everything — propensity scores, weights, and outcome model — on each resample. Captures all sources of variability. Computationally expensive.
+
+3. **M-estimation**: Stacks estimating equations for the propensity score model and the outcome model, then analytically propagates uncertainty through all steps. Computationally efficient and asymptotically valid.

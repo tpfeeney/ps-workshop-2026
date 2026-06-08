@@ -1,0 +1,186 @@
+---
+title: "Activity 1"
+subtitle: "Set-up & Explore"
+toc: true
+format: live-html
+webr:
+  show-startup-message: false
+  packages:
+    - dplyr
+    - purrr
+    - ggplot2
+    - kableExtra
+    - tidyr
+    - broom
+    - tableone
+    - survey
+    - smd
+  resources:
+    - R/metadata.R
+    - data/tpa_ds.rds
+---
+
+In Activity 1, we will load the necessary packages, explore the data, compute descriptive statistics, and estimate some basic (unadjusted and multivariable) effect estimates. These will serve as a benchmark to compare against the propensity score estimates in Activity 2.
+
+# Load packages
+
+The packages below are pre-installed for this page. Run this chunk to load them into your session.
+
+```{webr}
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(kableExtra)
+library(tidyr)
+library(broom)
+library(tableone)
+library(survey)
+library(smd)
+```
+
+# Read-in data
+
+```{webr}
+source("R/metadata.R")          # variable labels and factor levels
+tpa_ds <- readRDS("data/tpa_ds.rds")
+
+summary(tpa_ds)
+```
+
+```{webr}
+head(tpa_ds) |>
+  kable()
+```
+
+# Pre-process data
+
+We do some light pre-processing: creating a grouped age variable (`age_5f`), defining the exposure, outcome, and confounder vectors, and limiting to complete cases.
+
+There is missingness in this dataset. Appropriate handling of missing data (e.g., multiple imputation) is beyond the scope of this workshop, so we use a complete-case analysis.
+
+```{webr}
+## Create new factor variable for age in 5-year increments
+tpa_ds$age_5f <- cut(tpa_ds$age, breaks = seq(14, 105, by = 5), right = FALSE)
+
+## Define the variables we need throughout the analysis
+exposure    <- "tpa"
+outcome     <- "death"
+confounders <- c("age", "sex", "living", "comorbid", "cardiac", "prevstroke",
+                 "htn", "hyperchol", "afib", "aphasia", "paresis_3f", "rankpre", "icu")
+
+## Binary/categorical confounders (for tableone)
+conf_cat <- c("icu", "comorbid", "cardiac", "prevstroke", "htn", "hyperchol",
+              "afib", "aphasia")
+
+## Limit to complete case data
+tpa_ds_cc <- tpa_ds |>
+  dplyr::filter(dplyr::if_all(dplyr::all_of(c(exposure, outcome, confounders)), ~!is.na(.x)))
+
+## Understand the amount of missingness
+tpa_ds |>
+  dplyr::summarize(
+    across(dplyr::all_of(c(exposure, outcome, confounders)), \(x) sum(is.na(x)))
+  ) |>
+  tidyr::pivot_longer(cols = everything(), names_to = "Variable", values_to = "Number missing") |>
+  dplyr::filter(`Number missing` > 0) |>
+  kable()
+```
+
+# Descriptive statistics
+
+After limiting to complete cases, how many people are in our analysis? What proportion were treated with t-PA? What proportion died?
+
+```{webr}
+cat("N =", nrow(tpa_ds_cc), "\n")
+cat("% treated with t-PA:", round(100 * mean(tpa_ds_cc$tpa), 1), "\n")
+cat("% who died:", round(100 * mean(tpa_ds_cc$death), 1), "\n")
+cat("\nAmong treated:   % died =", round(100 * mean(tpa_ds_cc$death[tpa_ds_cc$tpa == 1]), 1), "\n")
+cat("Among untreated: % died =", round(100 * mean(tpa_ds_cc$death[tpa_ds_cc$tpa == 0]), 1), "\n")
+```
+
+## Table 1: Baseline characteristics by treatment group
+
+A Table 1 shows the distribution of confounders across treatment groups *before* any adjustment. Large differences between groups indicate confounding — characteristics associated with both treatment and outcome.
+
+The standardized mean difference (SMD) quantifies the imbalance on each covariate: values above 0.1 typically indicate meaningful imbalance.
+
+```{webr}
+t1 <- tableone::CreateTableOne(
+  vars       = confounders,
+  strata     = "tpa_f",
+  data       = tpa_ds_cc,
+  factorVars = conf_cat,
+  smd        = TRUE,
+  test       = FALSE
+)
+
+kable(print(t1, smd = TRUE, printToggle = FALSE, varLabels = TRUE))
+```
+
+What do you notice about the covariate distributions? Which variables show the largest imbalance?
+
+# Basic analyses
+
+To understand how confounding might affect our effect estimates, we first estimate crude (unadjusted) and multivariable-adjusted measures of association. These serve as a benchmark for comparison with the propensity score-weighted estimates we will compute in Activity 2.
+
+## Crude analysis
+
+### Risk difference
+
+We use a binomial generalized linear model with an identity link to estimate the crude risk difference. The coefficient on `tpa` is the difference in risk of death between treated and untreated.
+
+```{webr}
+crude_rd_model <- glm(death ~ tpa, data = tpa_ds_cc,
+                      family = binomial(link = "identity"))
+
+crude_rd <- crude_rd_model |>
+  broom::tidy(conf.int = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "Crude RD")
+
+crude_rd |>
+  dplyr::select(term, estimate, conf.low, conf.high) |>
+  kable(digits = 3)
+```
+
+### Risk ratio
+
+We use a binomial GLM with a log link to estimate the crude risk ratio. Because the log-binomial model uses a non-canonical link, it can encounter convergence problems; this is a known limitation.
+
+```{webr}
+crude_rr_model <- glm(death ~ tpa, data = tpa_ds_cc,
+                      family = binomial(link = "log"))
+
+crude_rr <- crude_rr_model |>
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "Crude RR")
+
+crude_rr |>
+  dplyr::select(term, estimate, conf.low, conf.high) |>
+  kable(digits = 3)
+```
+
+## Multivariable analysis
+
+Here we fit a multivariable log-binomial model adjusting for all confounders. This estimates the **conditional** risk ratio — the effect of t-PA for a person with a specific covariate profile, rather than the population-average (marginal) effect.
+
+```{webr}
+outform <- sprintf("death ~ tpa + %s", paste(confounders, collapse = " + "))
+
+multi_model <- glm(as.formula(outform), data = tpa_ds_cc,
+                   family = binomial(link = "log"))
+
+multi_res <- multi_model |>
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "Multivariable RR (conditional)")
+
+multi_res |>
+  dplyr::select(term, estimate, conf.low, conf.high) |>
+  kable(digits = 3)
+```
+
+How do the crude and multivariable estimates compare? Does adjusting for confounders move the estimate toward or away from the null? Does this surprise you, given what you saw in Table 1?
+
+Keep these estimates — we will compare them to the propensity score-weighted results in Activity 2.

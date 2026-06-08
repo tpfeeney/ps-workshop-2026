@@ -1,0 +1,47 @@
+---
+title: "Modern Uses of Propensity Scores"
+subtitle: "Weighting, estimands, and moving beyond the bootstrap"
+---
+
+Welcome to the companion website for the **SER 2026 Propensity Score Workshop**.
+
+## About This Workshop
+
+This workshop covers modern uses of propensity score methods in epidemiology, with a focus on:
+
+- Weighting approaches to estimate marginal causal effects (ATE, ATT, ATU)
+- Choosing the right estimand for your research question
+- Standard error estimation beyond the bootstrap: sandwich variance and M-estimation
+
+The workshop alternates between didactic sessions and hands-on activities. This site hosts the activity materials. Each activity page contains live, runnable R code — no local R installation needed. When you load an activity page, the necessary packages download automatically in the background. Once ready, click **Run** on any code block to execute it.
+
+## Workshop Structure
+
+| Time | Session |
+|------|---------|
+| Introduction | Clinical problem and descriptive analysis → **Activity 1** |
+| Didactics | Causal inference, estimands, propensity scores, IPTW |
+| Estimation | Propensity score estimation and weighted analyses → **Activity 2** |
+| Break | |
+| Didactics | Standard error estimation |
+| Inference | Robust variance, bootstrap, M-estimation → **Activity 3** |
+| Closing | Questions and discussion |
+
+## How to Use This Site
+
+Navigate using the sidebar on the left. Start with the **Example Overview** pages for background on the clinical question and data. Then work through the **Activities** in order — each activity builds on the previous one.
+
+Code blocks look like this and have a **Run** button:
+
+```r
+# Example — click Run to execute
+1 + 1
+```
+
+You can modify the code and re-run it. This is a sandbox — experiment freely.
+
+## Instructors
+
+Timothy Feeney, Catherine Wiener, and Tobias Kurth
+
+*UNC Chapel Hill and Charité Berlin*

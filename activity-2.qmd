@@ -1,0 +1,376 @@
+---
+title: "Activity 2"
+subtitle: "Propensity Score Estimation and Weighting"
+toc: true
+format: live-html
+webr:
+  show-startup-message: false
+  packages:
+    - dplyr
+    - purrr
+    - ggplot2
+    - kableExtra
+    - tidyr
+    - broom
+    - tableone
+    - survey
+    - smd
+  resources:
+    - R/metadata.R
+    - data/tpa_ds.rds
+---
+
+In Activity 2, we estimate the propensity score, construct inverse probability of treatment weights for different estimands, assess balance after weighting, and estimate marginal causal effects.
+
+# Setup
+
+Each activity page runs independently. Run the block below to reload the data and reproduce the preprocessing from Activity 1 before continuing.
+
+```{webr}
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(kableExtra)
+library(tidyr)
+library(broom)
+library(tableone)
+library(survey)
+library(smd)
+
+source("R/metadata.R")
+tpa_ds <- readRDS("data/tpa_ds.rds")
+
+tpa_ds$age_5f <- cut(tpa_ds$age, breaks = seq(14, 105, by = 5), right = FALSE)
+
+exposure    <- "tpa"
+outcome     <- "death"
+confounders <- c("age", "sex", "living", "comorbid", "cardiac", "prevstroke",
+                 "htn", "hyperchol", "afib", "aphasia", "paresis_3f", "rankpre", "icu")
+conf_cat    <- c("icu", "comorbid", "cardiac", "prevstroke", "htn", "hyperchol",
+                 "afib", "aphasia")
+
+tpa_ds_cc <- tpa_ds |>
+  dplyr::filter(dplyr::if_all(dplyr::all_of(c(exposure, outcome, confounders)), ~!is.na(.x)))
+
+cat("Data loaded:", nrow(tpa_ds_cc), "complete cases\n")
+```
+
+# Propensity score model
+
+The propensity score is the probability of receiving t-PA given the observed confounders: $\hat{e}(\mathbf{L}) = \hat{P}[A=1 \mid \mathbf{L}]$. We estimate it using logistic regression with treatment as the outcome and all confounders as predictors.
+
+Variable selection should be guided by your causal diagram (DAG). Include confounders (causes of both treatment and outcome) and outcome predictors. Exclude mediators (variables on the causal pathway from treatment to outcome).
+
+```{webr}
+expform <- sprintf("tpa ~ %s", paste(confounders, collapse = " + "))
+
+ps_model <- glm(as.formula(expform), data = tpa_ds_cc,
+                family = binomial(link = "logit"))
+
+## Add propensity score (predicted probability of treatment)
+tpa_ds_cc$ps <- predict(ps_model, type = "response")
+
+## Add marginal probability of treatment (for stabilized weights)
+tpa_ds_cc$pa <- predict(glm(tpa ~ 1, data = tpa_ds_cc,
+                            family = binomial(link = "logit")),
+                        type = "response")
+
+cat("Propensity score summary:\n")
+summary(tpa_ds_cc$ps)
+```
+
+## Propensity score diagnostics
+
+Examine the propensity score distribution within each treatment group. Large regions of non-overlap ("lack of positivity") indicate covariate profiles where only treated or only untreated people appear — causal effects cannot be estimated there without extrapolation.
+
+```{webr}
+cat("Propensity scores among treated (tPA = 1):\n")
+summary(tpa_ds_cc$ps[tpa_ds_cc$tpa == 1])
+
+cat("\nPropensity scores among untreated (tPA = 0):\n")
+summary(tpa_ds_cc$ps[tpa_ds_cc$tpa == 0])
+```
+
+```{webr}
+ggplot(tpa_ds_cc, aes(x = ps, fill = tpa_f)) +
+  geom_density(alpha = 0.4) +
+  theme_minimal() +
+  labs(
+    y = "Density", x = "Propensity score", fill = "Treatment group",
+    title = "Propensity score distribution by treatment (unweighted)"
+  )
+```
+
+What do you notice about the overlap? Are there regions of the propensity score where one treatment group is barely represented?
+
+---
+
+# ATE: Average Treatment Effect
+
+The ATE is the effect of treatment in the *entire population* — had everyone received t-PA vs. had no one received t-PA. We use **inverse probability of treatment (IPT) weights**.
+
+$$\hat{\omega}_{i,\text{IPT}} = \frac{I(A_i=1)}{\hat{e}(\mathbf{L}_i)} + \frac{I(A_i=0)}{1-\hat{e}(\mathbf{L}_i)}$$
+
+**Stabilized weights** scale by the marginal probability of treatment. They have the same mean as 1, produce narrower confidence intervals, and are generally preferred:
+
+$$\hat{\omega}_{i,\text{sIPT}} = \frac{I(A_i=1)\,\hat{P}(A=1)}{\hat{e}(\mathbf{L}_i)} + \frac{I(A_i=0)\,\hat{P}(A=0)}{1-\hat{e}(\mathbf{L}_i)}$$
+
+## Calculate IPT weights
+
+```{webr}
+## Unstabilized IPT weights
+tpa_ds_cc$ipt <- with(tpa_ds_cc,
+  tpa / ps + (1 - tpa) / (1 - ps)
+)
+
+## Stabilized IPT weights
+tpa_ds_cc$sipt <- with(tpa_ds_cc,
+  tpa * pa / ps + (1 - tpa) * (1 - pa) / (1 - ps)
+)
+
+cat("Unstabilized IPT weight summary:\n")
+summary(tpa_ds_cc$ipt)
+
+cat("\nStabilized IPT weight summary:\n")
+summary(tpa_ds_cc$sipt)
+```
+
+Extreme weights (very large values) indicate near-positivity violations and can inflate variance. How do the unstabilized and stabilized weight distributions compare?
+
+## Balance after IPT weighting
+
+We check covariate balance in the IPT-weighted pseudo-population. The goal is for SMDs to fall below 0.1 for all covariates.
+
+```{webr}
+design_ipt <- survey::svydesign(id = ~1, weights = ~ipt, data = tpa_ds_cc)
+
+t1_ipt <- tableone::svyCreateTableOne(
+  data       = design_ipt,
+  vars       = confounders,
+  strata     = "tpa_f",
+  factorVars = conf_cat,
+  smd        = TRUE,
+  test       = FALSE
+)
+
+kable(print(t1_ipt, smd = TRUE, printToggle = FALSE, varLabels = TRUE))
+```
+
+## Marginal structural model: ATE
+
+A **marginal structural model (MSM)** fits a weighted outcome regression in the pseudo-population created by the weights. The weighted regression estimate is equivalent to the marginal (population-average) causal effect.
+
+```{webr}
+## ATE risk difference (linear probability model, unstabilized weights)
+ate_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = ipt)
+
+ate_rd <- ate_rd_model |>
+  broom::tidy(conf.int = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "ATE RD")
+
+## ATE risk ratio (log link, unstabilized weights)
+ate_rr_model <- glm(death ~ tpa, data = tpa_ds_cc, weights = ipt,
+                    family = quasibinomial(link = "log"))
+
+ate_rr <- ate_rr_model |>
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "ATE RR")
+
+bind_rows(ate_rd, ate_rr) |>
+  dplyr::select(term, estimate, conf.low, conf.high) |>
+  kable(digits = 3)
+```
+
+---
+
+# ATT: Average Treatment Effect in the Treated
+
+The ATT is the effect of treatment among people *who were actually treated*. We target the treated group using **standardized mortality ratio (SMR) weights**:
+
+$$\hat{\omega}_{i,\text{SMR}} = I(A_i=1) + \frac{I(A_i=0)\,\hat{e}(\mathbf{L}_i)}{1-\hat{e}(\mathbf{L}_i)}$$
+
+Treated observations keep weight 1. Untreated observations are upweighted by their odds of treatment, making the untreated pseudo-population resemble the treated group.
+
+*Why might the ATT be a more relevant estimand than the ATE in this context?* t-PA has well-defined eligibility criteria. The ATE averages across everyone — including people for whom t-PA would be contraindicated. The ATT focuses on the people who look like those who actually received treatment: those who cleared the eligibility bar.
+
+## Calculate SMR weights
+
+```{webr}
+tpa_ds_cc$smr <- with(tpa_ds_cc,
+  tpa + (1 - tpa) * ps / (1 - ps)
+)
+
+cat("SMR weight summary:\n")
+summary(tpa_ds_cc$smr)
+
+cat("\nSMR weights among treated:\n")
+summary(tpa_ds_cc$smr[tpa_ds_cc$tpa == 1])
+
+cat("\nSMR weights among untreated:\n")
+summary(tpa_ds_cc$smr[tpa_ds_cc$tpa == 0])
+```
+
+## Balance after SMR weighting
+
+```{webr}
+design_smr <- survey::svydesign(id = ~1, weights = ~smr, data = tpa_ds_cc)
+
+t1_smr <- tableone::svyCreateTableOne(
+  data       = design_smr,
+  vars       = confounders,
+  strata     = "tpa_f",
+  factorVars = conf_cat,
+  smd        = TRUE,
+  test       = FALSE
+)
+
+kable(print(t1_smr, smd = TRUE, printToggle = FALSE, varLabels = TRUE))
+```
+
+## Marginal structural model: ATT
+
+```{webr}
+att_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = smr)
+
+att_rd <- att_rd_model |>
+  broom::tidy(conf.int = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "ATT RD")
+
+att_rr <- glm(death ~ tpa, data = tpa_ds_cc, weights = smr,
+              family = quasibinomial(link = "log")) |>
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "ATT RR")
+
+bind_rows(att_rd, att_rr) |>
+  dplyr::select(term, estimate, conf.low, conf.high) |>
+  kable(digits = 3)
+```
+
+---
+
+# ATU: Average Treatment Effect in the Untreated
+
+The ATU asks: what would have been the effect of t-PA among people who *were not* treated? We target the untreated group using SRR (standardized risk ratio) weights:
+
+$$\hat{\omega}_{i,\text{SRR}} = \frac{I(A_i=1)\left[1-\hat{e}(\mathbf{L}_i)\right]}{\hat{e}(\mathbf{L}_i)} + I(A_i=0)$$
+
+```{webr}
+tpa_ds_cc$smr_atu <- with(tpa_ds_cc,
+  (1 - tpa) + tpa * (1 - ps) / ps
+)
+
+atu_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = smr_atu)
+
+atu_rd <- atu_rd_model |>
+  broom::tidy(conf.int = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "ATU RD")
+
+atu_rr <- glm(death ~ tpa, data = tpa_ds_cc, weights = smr_atu,
+              family = quasibinomial(link = "log")) |>
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "ATU RR")
+
+bind_rows(atu_rd, atu_rr) |>
+  dplyr::select(term, estimate, conf.low, conf.high) |>
+  kable(digits = 3)
+```
+
+*Why might the ATU be less meaningful here?* The untreated group includes patients who were ineligible for t-PA (e.g., hemorrhagic stroke, late arrival). Estimating "what would happen if we treated them" requires extrapolating to covariate regions with very few (or no) treated individuals.
+
+---
+
+# Love plot: Balance across weighting methods
+
+A Love plot displays SMDs for all covariates across weighting methods side-by-side. The vertical reference line at 0.1 represents a commonly used threshold for acceptable balance.
+
+```{webr}
+## Extract SMDs from tableone objects and label by weight type
+smd_data <- dplyr::bind_rows(
+  tableone::ExtractSmd(t1, varLabels = TRUE) |>
+    tibble::as_tibble(rownames = "variable") |>
+    dplyr::mutate(weight = "Unweighted"),
+  tableone::ExtractSmd(t1_ipt, varLabels = TRUE) |>
+    tibble::as_tibble(rownames = "variable") |>
+    dplyr::mutate(weight = "IPT (ATE)"),
+  tableone::ExtractSmd(t1_smr, varLabels = TRUE) |>
+    tibble::as_tibble(rownames = "variable") |>
+    dplyr::mutate(weight = "SMR (ATT)")
+)
+
+ggplot(smd_data, aes(x = `1 vs 2`, y = variable, color = weight, shape = weight)) +
+  geom_vline(xintercept = 0.1, linewidth = 0.4, linetype = "dashed") +
+  geom_point(size = 2) +
+  theme_classic() +
+  labs(y = "", x = "Standardized Mean Difference",
+       color = "Weighting method", shape = "Weighting method",
+       title = "Covariate balance before and after weighting")
+```
+
+Do both weighting approaches achieve balance (SMD < 0.1)? Are there any covariates that remain imbalanced?
+
+> **Note:** To build this Love plot, you need the `t1` object from the unweighted Table 1. This requires that the unweighted Table 1 code from Activity 1 has been run in *this* session. If you see an error about `t1` not found, run the block below.
+
+```{webr}
+## Run this if t1 is not found above
+t1 <- tableone::CreateTableOne(
+  vars       = confounders,
+  strata     = "tpa_f",
+  data       = tpa_ds_cc,
+  factorVars = conf_cat,
+  smd        = TRUE,
+  test       = FALSE
+)
+```
+
+---
+
+# Comparing all estimates
+
+Finally, we collect all effect estimates — crude, multivariable-adjusted, and weighted — to compare how the choice of method and estimand affects results.
+
+```{webr}
+## Re-estimate crude and multivariable from this session
+crude_rd_model <- glm(death ~ tpa, data = tpa_ds_cc,
+                      family = binomial(link = "identity"))
+crude_rd <- crude_rd_model |>
+  broom::tidy(conf.int = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "Crude RD")
+
+crude_rr <- glm(death ~ tpa, data = tpa_ds_cc,
+                family = binomial(link = "log")) |>
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "Crude RR")
+
+outform <- sprintf("death ~ tpa + %s", paste(confounders, collapse = " + "))
+multi_res <- glm(as.formula(outform), data = tpa_ds_cc,
+                 family = binomial(link = "log")) |>
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  dplyr::filter(term == "tpa") |>
+  dplyr::mutate(term = "Conditional RR (MV)")
+
+dplyr::bind_rows(crude_rd, crude_rr, multi_res,
+                 ate_rd, ate_rr, att_rd, att_rr, atu_rd, atu_rr) |>
+  dplyr::transmute(
+    Method   = if_else(term %in% c("Crude RD", "Crude RR", "Conditional RR (MV)"),
+                       "Unadjusted / conditional", "Propensity score weighted"),
+    Estimand = term,
+    Estimate = round(estimate, 3),
+    `95% CI` = paste0("(", round(conf.low, 3), ", ", round(conf.high, 3), ")")
+  ) |>
+  kable()
+```
+
+Discuss with your group:
+
+- How do the ATE, ATT, and ATU estimates compare to each other?
+- How do the weighted estimates compare to the crude and multivariable estimates?
+- Which estimand is most relevant for the clinical question?
+- What does this tell us about why observational studies may disagree with RCTs?

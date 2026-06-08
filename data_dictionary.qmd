@@ -1,0 +1,65 @@
+---
+title: Data
+toc: true
+---
+
+# Data Source
+
+- Originates from the Westphalian Stroke Register: regional data bank in the northwest of Germany
+
+- On a voluntary basis, 24 neurological, 13 internal medicine and 5 geriatric medicine departments in 42 hospitals participated in the project in 2000 and 2001
+
+- Included patients treated for a transient ischemic attack, ischemic stroke or intracerebral hemorrhage
+
+- Sociodemographic characteristics, cerebrovascular risk factors, comorbidities, stroke type and severity, as well as details regarding the participating centers, the mode of admission, diagnostic and therapeutic procedures and complications documented
+
+- The standardized data assessment forms were evaluated centrally at the Institute of Epidemiology and Social Medicine at the University of Muenster, Germany
+
+- In total, 12,410 patients with stroke symptoms were entered into the registry until 2001: 8,208 were ischemic, 2,794 transient ischemic attacks, 793 primary intracerebral hemorrhages and 615 unknown
+
+- For this clinical example, only ischemic stroke patients were considered. Furthermore, ischemic stroke patients were excluded from centers that did not perform t-PA lysis throughout the time of observation (2000-2001)
+
+- A total of 6,269 patients were included in the original example. More details of the original sample can be found: Kurth T et al. Results of multivariable logistic regression, propensity matching, propensity adjustment, and propensity-based weighting under conditions of nonuniform effect. Am J Epidemiol. 2006 Feb 1;163(3):262--70.
+
+- The data set we use in this lab is a **randomly modified dataset**. Therefore, some of the association pattern behaves differently than clinically expected. The total number of observations in this dataset is set to 10,000.
+
+- This data set is for your **personal use only**. Please do not share it outside of class.
+
+# Data Dictionary
+
+```{r, echo = F}
+library(kableExtra)
+source("R/metadata.R")
+purrr::imap_dfr(
+    varlabels,
+    .f =   function(x, y){
+      dplyr::tibble(
+        name = y,
+        label = x$lbl,
+        type = x$type,
+        values = if (type == "factor") {
+          paste0(x$lvl, " = ", names(x$lvl),collapse = "<br>")
+        } else if (type == "binary") {
+          "1 = Yes <br> 0 = No"
+        } else if (type == "numeric") {
+          paste0(x$lvl) 
+        }
+      )
+    }
+  ) |> 
+  dplyr::distinct()-> df
+```
+
+```{r, echo = F}
+#| results: asis
+
+df|> 
+  dplyr::arrange(name) |> 
+  kableExtra::kable(escape = FALSE,
+                    format = "html",
+                   # longtable = TRUE,
+                    col.names = c("Variable Name", "Variable Label", "Variable Type", "Values")) |> 
+  kable_styling()
+
+```
+

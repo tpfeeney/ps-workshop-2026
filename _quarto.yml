@@ -1,0 +1,37 @@
+project:
+  type: website
+  render:
+    - "*.qmd"
+    - "!old_lab/**"
+    - "!slides/**"
+  resources:
+    - R/metadata.R
+    - data/tpa_ds.rds
+
+website:
+  title: "Modern uses of propensity scores"
+  sidebar:
+    style: "docked"
+    search: true
+    contents:
+      - text: "Introduction"
+        href: index.qmd
+      - section: "Example Overview"
+        contents:
+          - overview.qmd
+          - data_dictionary.qmd
+      - section: Activities
+        contents:
+          - activity-1.qmd
+          - activity-2.qmd
+          - activity-3.qmd
+
+format:
+  html:
+    theme:
+      - cosmo
+      - brand
+    css: styles.css
+    toc: true
+
+
