@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
@@ -20,14 +23,10 @@ jobs:
           use-public-rspm: true
 
       - name: Install R packages
-        uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          packages: |
-            any::knitr
-            any::rmarkdown
-            any::kableExtra
-            any::purrr
-            any::dplyr
+        run: |
+          install.packages(c("knitr", "rmarkdown", "kableExtra", "purrr", "dplyr"),
+                           repos = "https://packagemanager.posit.co/cran/latest")
+        shell: Rscript {0}
 
       - name: Set up Quarto
         uses: quarto-dev/quarto-actions/setup@v2
