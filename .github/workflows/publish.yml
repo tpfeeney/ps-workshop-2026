@@ -24,8 +24,8 @@ jobs:
 
       - name: Install R packages
         run: |
-          install.packages(c("knitr", "rmarkdown", "kableExtra", "purrr", "dplyr"),
-                           repos = "https://packagemanager.posit.co/cran/latest")
+          install.packages("pak", repos = "https://packagemanager.posit.co/cran/latest")
+          pak::pak(c("knitr", "rmarkdown", "kableExtra", "purrr", "dplyr"))
         shell: Rscript {0}
 
       - name: Set up Quarto
