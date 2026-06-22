@@ -21,6 +21,7 @@ The workshop materials require R and R Studio. [Installation instructions here](
 
 The code can be run directly in the browser from this website. However, if you'd prefer downloading files and running locally (recommended!), download here:
 
+- [Slides](_site/slides.html)
 - [Data](data/tpa_ds.rds)
 - [Metadata helper](R/metadata.R)
 - [Activity 1](downloads/activity-1.qmd){download="activity-1.qmd"}
