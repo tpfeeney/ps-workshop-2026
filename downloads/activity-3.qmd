@@ -12,7 +12,7 @@ Install the required packages (skip any you already have):
 ```{r}
 #| eval: false
 install.packages(c("dplyr", "ggplot2", "kableExtra", "broom",
-                   "sandwich", "numDeriv"))
+                   "sandwich", "geex"))
 ```
 
 You also need two files from the workshop in your working directory:
@@ -38,7 +38,7 @@ library(ggplot2)
 library(kableExtra)
 library(broom)
 library(sandwich)
-library(numDeriv)
+library(geex)
 ```
 
 ```{r}
@@ -218,10 +218,10 @@ setup_ef <- function(data) {
     smr <- a + (1 - a) * pscore / (1 - pscore)
 
     ## Estimating equations for weighted group means
-    ef_ipt_mu0  <- sum(((1 - a) * ipt) * (y - theta_ipt_mu[1]))
-    ef_ipt_mu1  <- sum((a * ipt) * (y - theta_ipt_mu[2]))
-    ef_smr_mu0  <- sum(((1 - a) * smr) * (y - theta_smr_mu[1]))
-    ef_smr_mu1  <- sum((a * smr) * (y - theta_smr_mu[2]))
+    ef_ipt_mu0  <- ((1 - a) * ipt) * (y - theta_ipt_mu[1])
+    ef_ipt_mu1  <- (a * ipt) * (y - theta_ipt_mu[2])
+    ef_smr_mu0  <- ((1 - a) * smr) * (y - theta_smr_mu[1])
+    ef_smr_mu1  <- (a * smr) * (y - theta_smr_mu[2])
 
     ## Estimating equations for ATE and ATT risk differences
     ef_ate <- theta_ipt_mu[2] - theta_ipt_mu[1] - theta_ipt_ate
@@ -234,66 +234,31 @@ setup_ef <- function(data) {
 }
 ```
 
-## Solve the estimating equations
+## Solve and compute the sandwich variance
 
-We solve the system $\sum_i \psi(\mathbf{Y}_i, \hat{\boldsymbol{\theta}}) = \mathbf{0}$ using Newton-Raphson iteration with `numDeriv::jacobian` for the Jacobian. Starting values come from our earlier estimates.
+`geex::m_estimate()` handles both steps: it finds $\hat{\boldsymbol{\theta}}$ by solving the stacked estimating equations, then computes the sandwich variance automatically. We supply starting values and pass `setup_ef` directly as the estimating function — `geex` calls it once per observation.
 
 ```{r}
-## Total estimating equations (sum over all observations)
-ef_total <- function(theta) {
-  ef_fn <- setup_ef(mest_data)
-  ef_fn(theta)
-}
-
-## Starting values: 0s for PS params, rough estimates for means and differences
 p_ps    <- ncol(model.matrix(~ ., data = mest_data[, !(names(mest_data) %in% c("tpa","death"))]))
 mu1_est <- mean(mest_data$death[mest_data$tpa == 1])
 mu0_est <- mean(mest_data$death[mest_data$tpa == 0])
 start   <- c(rep(0, p_ps), mu0_est, mu1_est, mu1_est - mu0_est,
              mu0_est, mu1_est, mu1_est - mu0_est)
 
-## Newton-Raphson solver
-cat("Solving estimating equations via Newton-Raphson...\n")
-theta_hat <- start
-for (iter in 1:100) {
-  ef_val <- ef_total(theta_hat)
-  if (max(abs(ef_val)) < 1e-8) {
-    cat("Converged at iteration", iter, "\n")
-    break
-  }
-  J         <- numDeriv::jacobian(func = ef_total, x = theta_hat)
-  theta_hat <- theta_hat - solve(J, ef_val)
-}
-```
+geex_result <- m_estimate(
+  estFUN       = setup_ef,
+  data         = mest_data,
+  root_control = setup_root_control(start = start)
+)
 
-## Compute the sandwich variance
+theta_hat <- roots(geex_result)
 
-```{r}
-## Individual estimating function values for each observation
-n   <- nrow(mest_data)
-
-## B matrix: outer products of individual estimating functions
-ef_mat <- sapply(seq_len(n), function(i) {
-  ef_i <- setup_ef(mest_data[i, ])
-  ef_i(theta_hat)
-})
-
-B_mat <- (ef_mat %*% t(ef_mat)) / n
-
-## A matrix: negative Jacobian of total estimating equations, divided by n
-J_hat <- numDeriv::jacobian(func = ef_total, x = theta_hat)
-A_mat <- -J_hat / n
-
-## Sandwich variance
-V_hat <- solve(A_mat) %*% B_mat %*% t(solve(A_mat))
-
-## SEs for ATE (index p_ps + 3) and ATT (index p_ps + 6)
 idx_ate <- p_ps + 3
 idx_att <- p_ps + 6
 
 mest_se <- c(
-  ATE = sqrt(V_hat[idx_ate, idx_ate] / n),
-  ATT = sqrt(V_hat[idx_att, idx_att] / n)
+  ATE = sqrt(vcov(geex_result)[idx_ate, idx_ate]),
+  ATT = sqrt(vcov(geex_result)[idx_att, idx_att])
 )
 
 cat("M-estimation SE (ATE RD):", round(mest_se["ATE"], 4), "\n")
