@@ -6,6 +6,7 @@ project:
     - "*.qmd"
     - "!old_lab/**"
     - "!slides/**"
+    - "!downloads/**"
   resources:
     - R/metadata.R
     - data/tpa_ds.rds
