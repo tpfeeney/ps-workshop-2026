@@ -9,6 +9,7 @@ project:
   resources:
     - R/metadata.R
     - data/tpa_ds.rds
+    - downloads/
 
 website:
   title: "Modern uses of propensity scores"

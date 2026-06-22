@@ -2,35 +2,33 @@
 title: "Activity 1"
 subtitle: "Set-up & Explore"
 toc: true
-format: live-html
-webr:
-  show-startup-message: false
-  packages:
-    - dplyr
-    - purrr
-    - ggplot2
-    - kableExtra
-    - tidyr
-    - broom
-    - tableone
-    - survey
-    - smd
-  resources:
-    - R/metadata.R
-    - data/tpa_ds.rds
+format: html
 ---
 
-::: {.callout-note appearance="minimal"}
-**Prefer to work locally?** [Download the local version](downloads/activity-1.qmd){download="activity-1.qmd"} — a standard `.qmd` file with regular R chunks you can run in RStudio or with `quarto render`. You will also need [`data/tpa_ds.rds`](data/tpa_ds.rds) and [`R/metadata.R`](R/metadata.R).
-:::
+## Before you begin
+
+Install the required packages (skip any you already have):
+
+```{r}
+#| eval: false
+install.packages(c("dplyr", "purrr", "ggplot2", "kableExtra",
+                   "tidyr", "broom", "tableone", "survey", "smd"))
+```
+
+You also need two files from the workshop in your working directory:
+
+- `data/tpa_ds.rds` — the dataset
+- `R/metadata.R` — variable labels and factor levels
+
+Download them from the workshop website and place them in your working directory before running this file.
+
+---
 
 In Activity 1, we will load the necessary packages, explore the data, compute descriptive statistics, and estimate some basic (unadjusted and multivariable) effect estimates. These will serve as a benchmark to compare against the propensity score estimates in Activity 2.
 
 # Load packages
 
-The packages below are pre-installed for this page. Run this chunk to load them into your session.
-
-```{webr}
+```{r}
 library(dplyr)
 library(purrr)
 library(ggplot2)
@@ -44,14 +42,14 @@ library(smd)
 
 # Read-in data
 
-```{webr}
+```{r}
 source("R/metadata.R")          # variable labels and factor levels
 tpa_ds <- readRDS("data/tpa_ds.rds")
 
 summary(tpa_ds)
 ```
 
-```{webr}
+```{r}
 head(tpa_ds) |>
   kable()
 ```
@@ -62,7 +60,7 @@ We do some light pre-processing: creating a grouped age variable (`age_5f`), def
 
 There is missingness in this dataset. Appropriate handling of missing data (e.g., multiple imputation) is beyond the scope of this workshop, so we use a complete-case analysis.
 
-```{webr}
+```{r}
 ## Create new factor variable for age in 5-year increments
 tpa_ds$age_5f <- cut(tpa_ds$age, breaks = seq(14, 105, by = 5), right = FALSE)
 
@@ -94,7 +92,7 @@ tpa_ds |>
 
 After limiting to complete cases, how many people are in our analysis? What proportion were treated with t-PA? What proportion died?
 
-```{webr}
+```{r}
 cat("N =", nrow(tpa_ds_cc), "\n")
 cat("% treated with t-PA:", round(100 * mean(tpa_ds_cc$tpa), 1), "\n")
 cat("% who died:", round(100 * mean(tpa_ds_cc$death), 1), "\n")
@@ -108,7 +106,7 @@ A Table 1 shows the distribution of confounders across treatment groups *before*
 
 The standardized mean difference (SMD) quantifies the imbalance on each covariate: values above 0.1 typically indicate meaningful imbalance.
 
-```{webr}
+```{r}
 t1 <- tableone::CreateTableOne(
   vars       = confounders,
   strata     = "tpa_f",
@@ -133,7 +131,7 @@ To understand how confounding might affect our effect estimates, we first estima
 
 We use a binomial generalized linear model with an identity link to estimate the crude risk difference. The coefficient on `tpa` is the difference in risk of death between treated and untreated.
 
-```{webr}
+```{r}
 crude_rd_model <- glm(death ~ tpa, data = tpa_ds_cc,
                       family = binomial(link = "identity"))
 
@@ -151,7 +149,7 @@ crude_rd |>
 
 We use a binomial GLM with a log link to estimate the crude risk ratio. Because the log-binomial model uses a non-canonical link, it can encounter convergence problems; this is a known limitation.
 
-```{webr}
+```{r}
 crude_rr_model <- glm(death ~ tpa, data = tpa_ds_cc,
                       family = binomial(link = "log"))
 
@@ -169,7 +167,7 @@ crude_rr |>
 
 Here we fit a multivariable log-binomial model adjusting for all confounders. This estimates the **conditional** risk ratio — the effect of t-PA for a person with a specific covariate profile, rather than the population-average (marginal) effect.
 
-```{webr}
+```{r}
 outform <- sprintf("death ~ tpa + %s", paste(confounders, collapse = " + "))
 
 multi_model <- glm(as.formula(outform), data = tpa_ds_cc,

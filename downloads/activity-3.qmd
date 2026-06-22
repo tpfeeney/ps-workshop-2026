@@ -2,24 +2,27 @@
 title: "Activity 3"
 subtitle: "Inference: Standard Error Estimation"
 toc: true
-format: live-html
-webr:
-  show-startup-message: false
-  packages:
-    - dplyr
-    - ggplot2
-    - kableExtra
-    - broom
-    - sandwich
-    - numDeriv
-  resources:
-    - R/metadata.R
-    - data/tpa_ds.rds
+format: html
 ---
 
-::: {.callout-note appearance="minimal"}
-**Prefer to work locally?** [Download the local version](downloads/activity-3.qmd){download="activity-3.qmd"} — a standard `.qmd` file with regular R chunks you can run in RStudio or with `quarto render`. You will also need [`data/tpa_ds.rds`](data/tpa_ds.rds) and [`R/metadata.R`](R/metadata.R).
-:::
+## Before you begin
+
+Install the required packages (skip any you already have):
+
+```{r}
+#| eval: false
+install.packages(c("dplyr", "ggplot2", "kableExtra", "broom",
+                   "sandwich", "numDeriv"))
+```
+
+You also need two files from the workshop in your working directory:
+
+- `data/tpa_ds.rds` — the dataset
+- `R/metadata.R` — variable labels and factor levels
+
+Download them from the workshop website and place them in your working directory before running this file.
+
+---
 
 In Activity 3, we estimate standard errors for the IPT-weighted (ATE) and SMR-weighted (ATT) risk differences using three approaches: the robust sandwich variance, the bootstrap, and M-estimation.
 
@@ -29,7 +32,7 @@ Standard error estimation for weighted estimators is non-trivial. The weights ar
 
 Run this block first to load packages, data, and reproduce the preprocessing and weight estimation from Activities 1 and 2.
 
-```{webr}
+```{r}
 library(dplyr)
 library(ggplot2)
 library(kableExtra)
@@ -38,7 +41,7 @@ library(sandwich)
 library(numDeriv)
 ```
 
-```{webr}
+```{r}
 source("R/metadata.R")
 tpa_ds <- readRDS("data/tpa_ds.rds")
 
@@ -78,7 +81,7 @@ For the ATE, this means the sandwich SE is generally **conservative** (too large
 
 $$\hat{V}_{\text{sandwich}} = (\hat{A})^{-1} \hat{B} \left[(\hat{A})^{-1}\right]^T$$
 
-```{webr}
+```{r}
 ate_se_robust <- sqrt(sandwich::sandwich(ate_rd_model)[2, 2])
 att_se_robust <- sqrt(sandwich::sandwich(att_rd_model)[2, 2])
 
@@ -94,11 +97,9 @@ The bootstrap resamples the *entire dataset* with replacement and re-estimates e
 
 This correctly captures all sources of variability, including uncertainty from estimating the propensity score. The drawback is computational cost.
 
-**Note:** 200 bootstrap replicates is sufficient for a workshop illustration and the browser can't take much more. 
-
-```{webr}
+```{r}
 set.seed(24601)
-B <- 200
+B <- 500
 
 boot_results <- matrix(nrow = B, ncol = 2)  # col 1 = ATE RD, col 2 = ATT RD
 
@@ -131,7 +132,7 @@ cat("Bootstrap SE (ATT RD):", round(boot_se["ATT"], 4), "\n")
 
 You can also visualize the bootstrap distribution to check that it looks approximately normal, which is a requirement for valid Wald-type confidence intervals.
 
-```{webr}
+```{r}
 par(mfrow = c(1, 2))
 hist(boot_results[, 1], main = "Bootstrap: ATE RD", xlab = "Estimate", breaks = 30)
 hist(boot_results[, 2], main = "Bootstrap: ATT RD", xlab = "Estimate", breaks = 30)
@@ -159,7 +160,7 @@ The key benefit: because the propensity score equations are *part of the stack*,
 
 We first create a design matrix with indicator variables for all multi-level covariates. This is needed because the propensity score estimating equations require a numeric design matrix.
 
-```{webr}
+```{r}
 mest_data <- tpa_ds_cc |>
   dplyr::mutate(
     paresis_mild     = as.integer(paresis_3f == "Mild"),
@@ -193,7 +194,7 @@ The estimating function stacks:
 
 5. ATT risk difference definition: $\theta_{\text{ATT}} = \mu_1^{\text{SMR}} - \mu_0^{\text{SMR}}$
 
-```{webr}
+```{r}
 setup_ef <- function(data) {
   a <- data$tpa
   y <- data$death
@@ -210,7 +211,7 @@ setup_ef <- function(data) {
     ## Propensity score: logistic regression score equations
     lp     <- x %*% theta_ps
     pscore <- plogis(lp)
-    ef_ps  <- t(x) %*% (a - pscore)
+    ef_ps  <- as.vector(t(x) %*% (a - pscore))
 
     ## IPT and SMR weights
     ipt <- a / pscore + (1 - a) / (1 - pscore)
@@ -237,17 +238,8 @@ setup_ef <- function(data) {
 
 We solve the system $\sum_i \psi(\mathbf{Y}_i, \hat{\boldsymbol{\theta}}) = \mathbf{0}$ using Newton-Raphson iteration with `numDeriv::jacobian` for the Jacobian. Starting values come from our earlier estimates.
 
-```{webr}
-## Build the sum of estimating equations across all observations
-ef_sum <- function(theta) {
-  ef_i <- setup_ef(mest_data)
-  rowSums(sapply(seq_len(nrow(mest_data)), function(i) {
-    ef_i(theta)  # evaluates at the full dataset (vectorized over rows)
-  }))
-}
-
-## Actually the setup_ef already operates on full data vectors,
-## so we just call it once
+```{r}
+## Total estimating equations (sum over all observations)
 ef_total <- function(theta) {
   ef_fn <- setup_ef(mest_data)
   ef_fn(theta)
@@ -260,7 +252,7 @@ mu0_est <- mean(mest_data$death[mest_data$tpa == 0])
 start   <- c(rep(0, p_ps), mu0_est, mu1_est, mu1_est - mu0_est,
              mu0_est, mu1_est, mu1_est - mu0_est)
 
-## Newton-Raphson solver (replaces rootSolve::multiroot)
+## Newton-Raphson solver
 cat("Solving estimating equations via Newton-Raphson...\n")
 theta_hat <- start
 for (iter in 1:100) {
@@ -276,14 +268,11 @@ for (iter in 1:100) {
 
 ## Compute the sandwich variance
 
-```{webr}
+```{r}
 ## Individual estimating function values for each observation
 n   <- nrow(mest_data)
-ef_fn <- setup_ef(mest_data)
 
 ## B matrix: outer products of individual estimating functions
-## (We re-evaluate the function as a matrix — rows = parameters, cols = obs)
-## Since setup_ef vectorizes over the data, we perturb row-by-row
 ef_mat <- sapply(seq_len(n), function(i) {
   ef_i <- setup_ef(mest_data[i, ])
   ef_i(theta_hat)
@@ -319,7 +308,7 @@ cat("Weighted regression ATE RD:  ", round(coef(ate_rd_model)["tpa"], 4), "\n")
 
 # Comparing all three methods
 
-```{webr}
+```{r}
 tibble::tibble(
   Estimand  = c("ATE RD", "ATT RD"),
   Estimate  = round(c(coef(ate_rd_model)["tpa"],
@@ -339,6 +328,4 @@ tibble::tibble(
 
 - **Bootstrap SE**: Resamples the entire data-generating process, capturing all variability including from estimating the propensity score. Computationally expensive but valid.
 
-- **M-estimation SE**: Analytically propagates uncertainty from the propensity score model to the outcome, yielding consistent SEs. Efficient (no resampling), but relies on large-sample asymptotics. Can be smaller than the bootstrap when weights are very extreme (like the IPT weights here with a maximum near 500+).
-
-When sample sizes are large and weights are not too extreme, all three methods tend to agree. The ATE weights in this dataset are extreme (very large maximum), so you may see differences — particularly for the bootstrap and M-estimation SEs, which properly account for the extra variability introduced by those extreme weights.
+- **M-estimation SE**: Analytically propagates uncertainty from the propensity score model to the outcome, yielding consistent SEs. Efficient (no resampling), but relies on large-sample asymptotics.

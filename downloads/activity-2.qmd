@@ -2,35 +2,35 @@
 title: "Activity 2"
 subtitle: "Propensity Score Estimation and Weighting"
 toc: true
-format: live-html
-webr:
-  show-startup-message: false
-  packages:
-    - dplyr
-    - purrr
-    - ggplot2
-    - kableExtra
-    - tidyr
-    - broom
-    - tableone
-    - survey
-    - smd
-  resources:
-    - R/metadata.R
-    - data/tpa_ds.rds
+format: html
 ---
 
-::: {.callout-note appearance="minimal"}
-**Prefer to work locally?** [Download the local version](downloads/activity-2.qmd){download="activity-2.qmd"} — a standard `.qmd` file with regular R chunks you can run in RStudio or with `quarto render`. You will also need [`data/tpa_ds.rds`](data/tpa_ds.rds) and [`R/metadata.R`](R/metadata.R).
-:::
+## Before you begin
+
+Install the required packages (skip any you already have):
+
+```{r}
+#| eval: false
+install.packages(c("dplyr", "purrr", "ggplot2", "kableExtra",
+                   "tidyr", "broom", "tableone", "survey", "smd"))
+```
+
+You also need two files from the workshop in your working directory:
+
+- `data/tpa_ds.rds` — the dataset
+- `R/metadata.R` — variable labels and factor levels
+
+Download them from the workshop website and place them in your working directory before running this file.
+
+---
 
 In Activity 2, we estimate the propensity score, construct inverse probability of treatment weights for different estimands, assess balance after weighting, and estimate marginal causal effects.
 
 # Setup
 
-Each activity page runs independently. Run the block below to reload the data and reproduce the preprocessing from Activity 1 before continuing.
+Each activity file runs independently. Run the block below to reload the data and reproduce the preprocessing from Activity 1 before continuing.
 
-```{webr}
+```{r}
 library(dplyr)
 library(purrr)
 library(ggplot2)
@@ -65,7 +65,7 @@ The propensity score is the probability of receiving t-PA given the observed con
 
 Variable selection should be guided by your causal diagram (DAG). Include confounders (causes of both treatment and outcome) and outcome predictors. Exclude mediators (variables on the causal pathway from treatment to outcome).
 
-```{webr}
+```{r}
 expform <- sprintf("tpa ~ %s", paste(confounders, collapse = " + "))
 
 ps_model <- glm(as.formula(expform), data = tpa_ds_cc,
@@ -87,7 +87,7 @@ summary(tpa_ds_cc$ps)
 
 Examine the propensity score distribution within each treatment group. Large regions of non-overlap ("lack of positivity") indicate covariate profiles where only treated or only untreated people appear — causal effects cannot be estimated there without extrapolation.
 
-```{webr}
+```{r}
 cat("Propensity scores among treated (tPA = 1):\n")
 summary(tpa_ds_cc$ps[tpa_ds_cc$tpa == 1])
 
@@ -95,7 +95,7 @@ cat("\nPropensity scores among untreated (tPA = 0):\n")
 summary(tpa_ds_cc$ps[tpa_ds_cc$tpa == 0])
 ```
 
-```{webr}
+```{r}
 ggplot(tpa_ds_cc, aes(x = ps, fill = tpa_f)) +
   geom_density(alpha = 0.4) +
   theme_minimal() +
@@ -121,7 +121,7 @@ $$\hat{\omega}_{i,\text{sIPT}} = \frac{I(A_i=1)\,\hat{P}(A=1)}{\hat{e}(\mathbf{L
 
 ## Calculate IPT weights
 
-```{webr}
+```{r}
 ## Unstabilized IPT weights
 tpa_ds_cc$ipt <- with(tpa_ds_cc,
   tpa / ps + (1 - tpa) / (1 - ps)
@@ -145,7 +145,7 @@ Extreme weights (very large values) indicate near-positivity violations and can 
 
 We check covariate balance in the IPT-weighted pseudo-population. The goal is for SMDs to fall below 0.1 for all covariates.
 
-```{webr}
+```{r}
 design_ipt <- survey::svydesign(id = ~1, weights = ~ipt, data = tpa_ds_cc)
 
 t1_ipt <- tableone::svyCreateTableOne(
@@ -164,7 +164,7 @@ kable(print(t1_ipt, smd = TRUE, printToggle = FALSE, varLabels = TRUE))
 
 A **marginal structural model (MSM)** fits a weighted outcome regression in the pseudo-population created by the weights. The weighted regression estimate is equivalent to the marginal (population-average) causal effect.
 
-```{webr}
+```{r}
 ## ATE risk difference (linear probability model, unstabilized weights)
 ate_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = ipt)
 
@@ -201,7 +201,7 @@ Treated observations keep weight 1. Untreated observations are upweighted by the
 
 ## Calculate SMR weights
 
-```{webr}
+```{r}
 tpa_ds_cc$smr <- with(tpa_ds_cc,
   tpa + (1 - tpa) * ps / (1 - ps)
 )
@@ -218,7 +218,7 @@ summary(tpa_ds_cc$smr[tpa_ds_cc$tpa == 0])
 
 ## Balance after SMR weighting
 
-```{webr}
+```{r}
 design_smr <- survey::svydesign(id = ~1, weights = ~smr, data = tpa_ds_cc)
 
 t1_smr <- tableone::svyCreateTableOne(
@@ -235,7 +235,7 @@ kable(print(t1_smr, smd = TRUE, printToggle = FALSE, varLabels = TRUE))
 
 ## Marginal structural model: ATT
 
-```{webr}
+```{r}
 att_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = smr)
 
 att_rd <- att_rd_model |>
@@ -262,7 +262,7 @@ The ATU asks: what would have been the effect of t-PA among people who *were not
 
 $$\hat{\omega}_{i,\text{SRR}} = \frac{I(A_i=1)\left[1-\hat{e}(\mathbf{L}_i)\right]}{\hat{e}(\mathbf{L}_i)} + I(A_i=0)$$
 
-```{webr}
+```{r}
 tpa_ds_cc$smr_atu <- with(tpa_ds_cc,
   (1 - tpa) + tpa * (1 - ps) / ps
 )
@@ -293,12 +293,8 @@ bind_rows(atu_rd, atu_rr) |>
 
 A Love plot displays SMDs for all covariates across weighting methods side-by-side. The vertical reference line at 0.1 represents a commonly used threshold for acceptable balance.
 
-```{webr}
-
-## To build this Love plot, you need the `t1` object from the unweighted Table 1.
-## This requires that the unweighted Table 1 code from Activity 1 has been run 
-## in *this* session. Below we recreate `t1`
-
+```{r}
+## Recreate unweighted Table 1 for the Love plot
 t1 <- tableone::CreateTableOne(
   vars       = confounders,
   strata     = "tpa_f",
@@ -338,7 +334,7 @@ Do both weighting approaches achieve balance (SMD < 0.1)? Are there any covariat
 
 Finally, we collect all effect estimates — crude, multivariable-adjusted, and weighted — to compare how the choice of method and estimand affects results.
 
-```{webr}
+```{r}
 ## Re-estimate crude and multivariable from this session
 crude_rd_model <- glm(death ~ tpa, data = tpa_ds_cc,
                       family = binomial(link = "identity"))
