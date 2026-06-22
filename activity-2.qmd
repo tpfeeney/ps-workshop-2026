@@ -263,26 +263,7 @@ The ATU asks: what would have been the effect of t-PA among people who *were not
 $$\hat{\omega}_{i,\text{SRR}} = \frac{I(A_i=1)\left[1-\hat{e}(\mathbf{L}_i)\right]}{\hat{e}(\mathbf{L}_i)} + I(A_i=0)$$
 
 ```{webr}
-tpa_ds_cc$smr_atu <- with(tpa_ds_cc,
-  (1 - tpa) + tpa * (1 - ps) / ps
-)
-
-atu_rd_model <- lm(death ~ tpa, data = tpa_ds_cc, weights = smr_atu)
-
-atu_rd <- atu_rd_model |>
-  broom::tidy(conf.int = TRUE) |>
-  dplyr::filter(term == "tpa") |>
-  dplyr::mutate(term = "ATU RD")
-
-atu_rr <- glm(death ~ tpa, data = tpa_ds_cc, weights = smr_atu,
-              family = quasibinomial(link = "log")) |>
-  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
-  dplyr::filter(term == "tpa") |>
-  dplyr::mutate(term = "ATU RR")
-
-bind_rows(atu_rd, atu_rr) |>
-  dplyr::select(term, estimate, conf.low, conf.high) |>
-  kable(digits = 3)
+# add code here to calculate weights to target the ATU, fix the marginal structural model, and see results. 
 ```
 
 *Why might the ATU be less meaningful here?* The untreated group includes patients who were ineligible for t-PA (e.g., hemorrhagic stroke, late arrival). Estimating "what would happen if we treated them" requires extrapolating to covariate regions with very few (or no) treated individuals.
