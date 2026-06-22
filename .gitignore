@@ -11,3 +11,9 @@ _site/
 
 # Original (non-modified) data — not needed by the website, keep locally only
 data/pscore_data_new.sas7bdat
+downloads/*.html
+downloads/*_files/
+downloads/metadata.R
+downloads/*.rds
+old_lab/*
+slides/*
